@@ -1,0 +1,6 @@
+import pickle
+
+with open("all_models.pkl", "rb") as file:
+    models = pickle.load(file)
+
+print(models)
