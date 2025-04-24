@@ -4,6 +4,4 @@ xgboost
 numpy
 pandas
 scikit-learn
-
---break-system-packages
 pickle5; python_version < "3.8"
