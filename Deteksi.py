@@ -41,7 +41,7 @@ def stacked_prediction(input_data, model_name):
     except Exception as e:
         return {"error": str(e)}
 
-@app.route("/predict", methods=["POST"])
+@app.route("/predictdeteksi", methods=["POST"])
 def predict():
     try:
         data = request.json
