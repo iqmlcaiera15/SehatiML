@@ -1,0 +1,79 @@
+from flask import Flask, request, jsonify
+import pickle
+import numpy as np
+
+app = Flask(__name__)
+
+# Load model dari file pickle
+with open("all_models.pkl", "rb") as f:
+    models = pickle.load(f)
+
+# Pisahkan model untuk setiap penyakit
+diabetes_models = models["diabetes"]
+xgb_diabetes = diabetes_models["xgb_model"]
+rf_diabetes = diabetes_models["rf_model"]
+meta_diabetes = diabetes_models["meta_model"]
+
+hypertension_models = models["hypertension"]
+xgb_hypertension = hypertension_models["xgb_model"]
+rf_hypertension = hypertension_models["rf_model"]
+meta_hypertension = hypertension_models["meta_model"]
+
+maternal_models = models["maternal_health"]
+xgb_maternal = maternal_models["xgb_model"]
+rf_maternal = maternal_models["rf_model"]
+meta_maternal = maternal_models["meta_model"]
+
+@app.route("/test", methods=["POST"])
+def predict():
+    data = request.json
+    
+    # Ambil fitur dari setiap kategori
+    try:
+        diabetes_features = np.array([
+            data["diabetes"]["Pregnancies"],
+            data["diabetes"]["BS"],
+            data["diabetes"]["BloodPressure"],
+            data["diabetes"]["SkinThickness"],
+            data["diabetes"]["BMI"],
+            data["diabetes"]["Age"]
+        ]).reshape(1, -1)
+
+        hypertension_features = np.array([
+            data["hypertension"]["sex"],
+            data["hypertension"]["Age"],
+            data["hypertension"]["currentSmoker"],
+            data["hypertension"]["cigsPerDay"],
+            data["hypertension"]["BPMeds"],
+            data["hypertension"]["diabetes"],
+            data["hypertension"]["SystolicBP"],
+            data["hypertension"]["DiastolicBP"],
+            data["hypertension"]["BMI"],
+            data["hypertension"]["Heartrate"],
+            data["hypertension"]["BS"]
+        ]).reshape(1, -1)
+
+        maternal_features = np.array([
+            data["maternal_health"]["Age"],
+            data["maternal_health"]["SystolicBP"],
+            data["maternal_health"]["DiastolicBP"],
+            data["maternal_health"]["BS"],
+            data["maternal_health"]["BodyTemp"],
+            data["maternal_health"]["HeartRate"]
+        ]).reshape(1, -1)
+    
+    except KeyError as e:
+        return jsonify({"error": f"Missing key: {str(e)}"}), 400
+    
+    # Debug response sebelum prediksi
+    return jsonify({
+        "diabetes_features": diabetes_features.tolist(),
+        "expected_diabetes_features": meta_diabetes.n_features_in_,
+        "hypertension_features": hypertension_features.tolist(),
+        "expected_hypertension_features": meta_hypertension.n_features_in_,
+        "maternal_features": maternal_features.tolist(),
+        "expected_maternal_features": meta_maternal.n_features_in_
+    })
+
+if __name__ == "__main__":
+    app.run(debug=True)
