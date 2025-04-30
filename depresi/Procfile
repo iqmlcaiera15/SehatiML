@@ -1,1 +1,2 @@
 web: gunicorn Deteksi:app
+web: gunicorn depresi:app
