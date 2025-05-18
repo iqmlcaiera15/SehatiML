@@ -1,0 +1,7 @@
+Flask
+gunicorn
+xgboost
+numpy
+pandas
+scikit-learn
+pickle5; python_version < "3.8"
