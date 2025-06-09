@@ -6,6 +6,13 @@ import logging
 import os
 import json
 
+# Optional: Load .env
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except:
+    pass
+
 app = Flask(__name__)
 
 # 🔹 Setup Logging
@@ -14,7 +21,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# 🔹 Load Model & Feature Columns
+# 🔹 Load model dan explainer
 try:
     with open("random_forest_model.pkl", "rb") as model_file:
         model = pickle.load(model_file)
@@ -22,59 +29,53 @@ try:
     with open("feature_columns.pkl", "rb") as feature_file:
         feature_columns = pickle.load(feature_file)
 
-    logging.info("✅ Model dan fitur berhasil dimuat.")
+    # Load explainer LIME dari file pickle/dill (bukan generate ulang)
+    try:
+        with open("lime_explainer.pkl", "rb") as expl_file:
+            explainer = pickle.load(expl_file)
+    except Exception:
+        import dill
+        with open("lime_explainer.pkl", "rb") as expl_file:
+            explainer = dill.load(expl_file)
+
+    logging.info("Model, fitur, dan explainer berhasil dimuat.")
 except Exception as e:
-    logging.error(f"❌ Gagal memuat model atau fitur: {e}")
+    logging.error(f"Gagal load model/explainer: {e}")
     raise e
 
-# 🔹 Mapping String ke Numerik
+# 🔹 Mapping input (semua string → integer)
 mapping_tekanan_darah = {"normal": 0, "rendah": 1, "tinggi": 2}
 mapping_riwayat_persalinan = {"tidak ada": 0, "normal": 1, "caesar": 2}
 mapping_posisi_janin = {"normal": 0, "lintang": 1, "sungsang": 2}
-
-# 🔹 Mapping Numerik ke Output String
-mapping_hasil_prediksi = {0: "normal", 1: "caesar"}
+mapping_hasil_prediksi = {0: "Normal", 1: "Caesar"}
 
 def transform_input(data):
-    """
-    Transformasi input JSON ke DataFrame yang sesuai dengan fitur model.
-    """
     try:
-        logging.info("📩 Transformasi input dimulai...")
-
-        # 🔹 Inisialisasi semua fitur dengan nilai 0
         encoded_input = {col: 0 for col in feature_columns}
+        
+        # --- Normalisasi untuk one-hot encoding ---
+        # 1. Riwayat Kesehatan Ibu: jika user input 'normal' → 'Tidak Ada'
+        rki = str(data.get('riwayat_kesehatan_ibu', 'normal')).strip().title()
+        if rki.lower() == "normal":
+            rki = "Tidak Ada"
+        # 2. Kondisi Kesehatan Janin
+        kkj = str(data.get('kondisi_kesehatan_janin', 'normal')).strip().title()
 
-        # 🔹 One-Hot Encoding untuk kategori teks
-        riwayat_col = f"Riwayat Kesehatan Ibu_{data.get('riwayat_kesehatan_ibu', 'normal')}"
-        kondisi_col = f"Kondisi Kesehatan Janin_{data.get('kondisi_kesehatan_janin', 'normal')}"
-
+        riwayat_col = f"Riwayat Kesehatan Ibu_{rki}"
+        kondisi_col = f"Kondisi Kesehatan Janin_{kkj}"
         if riwayat_col in encoded_input:
             encoded_input[riwayat_col] = 1
-        else:
-            logging.warning(f"⚠️ Fitur {riwayat_col} tidak ditemukan di feature_columns.")
-
         if kondisi_col in encoded_input:
             encoded_input[kondisi_col] = 1
-        else:
-            logging.warning(f"⚠️ Fitur {kondisi_col} tidak ditemukan di feature_columns.")
 
-        # 🔹 Konversi Kategorikal ke Numerik
-        tekanan_darah = data["tekanan_darah"]
-        riwayat_persalinan = data["riwayat_persalinan"]
-        posisi_janin = data["posisi_janin"]
-
-        if isinstance(tekanan_darah, str):
-            tekanan_darah = mapping_tekanan_darah.get(tekanan_darah.lower())
-        if isinstance(riwayat_persalinan, str):
-            riwayat_persalinan = mapping_riwayat_persalinan.get(riwayat_persalinan.lower())
-        if isinstance(posisi_janin, str):
-            posisi_janin = mapping_posisi_janin.get(posisi_janin.lower())
+        # mapping .lower()+strip agar input string apapun case-nya konsisten
+        tekanan_darah = mapping_tekanan_darah.get(str(data["tekanan_darah"]).strip().lower())
+        riwayat_persalinan = mapping_riwayat_persalinan.get(str(data["riwayat_persalinan"]).strip().lower())
+        posisi_janin = mapping_posisi_janin.get(str(data["posisi_janin"]).strip().lower())
 
         if tekanan_darah is None or riwayat_persalinan is None or posisi_janin is None:
-            raise ValueError("Input tidak valid untuk tekanan_darah, riwayat_persalinan, atau posisi_janin")
+            raise ValueError("Input tidak valid (tekanan_darah, riwayat_persalinan, posisi_janin)")
 
-        # 🔹 Masukkan Fitur Numerik
         encoded_input.update({
             "Usia Ibu": int(data["usia_ibu"]),
             "Tekanan Darah": tekanan_darah,
@@ -82,57 +83,89 @@ def transform_input(data):
             "Posisi Janin": posisi_janin
         })
 
-        # 🔹 Konversi ke DataFrame dengan urutan kolom yang benar
-        transformed_df = pd.DataFrame([encoded_input]).reindex(columns=feature_columns, fill_value=0)
-
-        logging.info(f"✅ Data setelah transformasi:\n{transformed_df}")
-        return transformed_df, None
+        return pd.DataFrame([encoded_input]).reindex(columns=feature_columns, fill_value=0), None
     except Exception as e:
-        logging.error(f"❌ Gagal mengonversi input: {e}")
+        logging.error(f"Gagal transformasi input: {e}")
         return None, str(e)
+
+def interpret_main_cause(model, input_df, explainer, num_features=6):
+    try:
+        instance = input_df.values[0]
+        explanation = explainer.explain_instance(instance, model.predict_proba, num_features=num_features)
+
+        # Ambil hanya fitur dengan kontribusi positif
+        positive_features = [(feat, weight) for feat, weight in explanation.as_list() if weight > 0]
+
+        if positive_features:
+            top_feature = sorted(positive_features, key=lambda x: x[1], reverse=True)[0][0]
+            nama_mentah = top_feature.split()[0].replace("_", " ")
+
+            # Kamus nama fitur → bentuk lengkap
+            nama_fitur_mapping = {
+                "Usia": "Usia Ibu",
+                "Tekanan": "Tekanan Darah",
+                "Riwayat": "Riwayat Persalinan",
+                "Posisi": "Posisi Janin",
+                "Kondisi": "Kondisi Kesehatan Janin",
+                "Riwayat Kesehatan": "Riwayat Kesehatan Ibu"
+            }
+
+            for kunci, nama_bersih in nama_fitur_mapping.items():
+                if nama_mentah.startswith(kunci):
+                    return nama_bersih
+
+            return nama_mentah.capitalize()
+        else:
+            return "Tidak diketahui"
+    except Exception as e:
+        logging.error(f"Gagal interpretasi LIME: {e}")
+        return "Tidak diketahui"
 
 @app.route("/predict", methods=["POST"])
 def predict():
     try:
         data = request.get_json()
-        logging.info(f"📥 Data diterima dari client:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
+        logging.info(f"Data masuk:\n{json.dumps(data, indent=2, ensure_ascii=False)}")
 
-        # 🔹 Validasi Input
-        required_fields = ["usia_ibu", "tekanan_darah", "riwayat_persalinan", "posisi_janin", "riwayat_kesehatan_ibu", "kondisi_kesehatan_janin"]
+        required_fields = [
+            "usia_ibu", "tekanan_darah", "riwayat_persalinan",
+            "posisi_janin", "riwayat_kesehatan_ibu", "kondisi_kesehatan_janin"
+        ]
         for field in required_fields:
             if field not in data:
                 return jsonify({"error": f"Field {field} tidak boleh kosong"}), 400
 
-        # 🔹 Transformasi Data
         transformed_input, error = transform_input(data)
         if error:
             return jsonify({"error": error}), 400
 
-        # 🔹 Simpan data untuk debugging
-        debug_path = os.path.join(os.getcwd(), "debug_input_flask.csv")
-        transformed_input.to_csv(debug_path, index=False)
-        logging.info(f"✅ Data input disimpan ke {debug_path}")
-
-        # 🔹 Prediksi
         prediksi = model.predict(transformed_input)[0]
         hasil_prediksi = mapping_hasil_prediksi.get(prediksi, "unknown")
-        logging.info(f"✅ Hasil prediksi model: {hasil_prediksi}")
 
-        # 🔹 Respons JSON ke client
+        # --- Tambahkan Confidence (dalam persen bulat 0-100) ---
+        probas = model.predict_proba(transformed_input)[0]
+        pred_idx = list(mapping_hasil_prediksi.keys())[list(mapping_hasil_prediksi.values()).index(hasil_prediksi)]
+        confidence = float(probas[pred_idx])
+        confidence_percent = round(confidence * 100)
+
         response = OrderedDict([
             ("status", "success"),
             ("message", "Prediksi metode persalinan berhasil"),
-            ("hasil_prediksi", hasil_prediksi)
+            ("hasil_prediksi", hasil_prediksi),
+            ("confidence", confidence_percent)
         ])
-        return app.response_class(
-            response=json.dumps(response, ensure_ascii=False),
-            status=200,
-            mimetype="application/json"
-        )
+
+        if hasil_prediksi.lower() == "caesar":
+            faktor = interpret_main_cause(model, transformed_input, explainer, num_features=6)
+            response["faktor"] = faktor
+
+        return jsonify(response), 200
 
     except Exception as e:
-        logging.error(f"❌ Terjadi exception dalam prediksi: {e}")
+        logging.error(f"Error saat prediksi: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    debug_mode = os.environ.get("FLASK_DEBUG", "true").lower() == "true"
+    app.run(debug=debug_mode, host="0.0.0.0", port=port)
