@@ -54,11 +54,9 @@ def transform_input(data):
         encoded_input = {col: 0 for col in feature_columns}
         
         # --- Normalisasi untuk one-hot encoding ---
-        # 1. Riwayat Kesehatan Ibu: jika user input 'normal' → 'Tidak Ada'
         rki = str(data.get('riwayat_kesehatan_ibu', 'normal')).strip().title()
         if rki.lower() == "normal":
             rki = "Tidak Ada"
-        # 2. Kondisi Kesehatan Janin
         kkj = str(data.get('kondisi_kesehatan_janin', 'normal')).strip().title()
 
         riwayat_col = f"Riwayat Kesehatan Ibu_{rki}"
@@ -68,7 +66,6 @@ def transform_input(data):
         if kondisi_col in encoded_input:
             encoded_input[kondisi_col] = 1
 
-        # mapping .lower()+strip agar input string apapun case-nya konsisten
         tekanan_darah = mapping_tekanan_darah.get(str(data["tekanan_darah"]).strip().lower())
         riwayat_persalinan = mapping_riwayat_persalinan.get(str(data["riwayat_persalinan"]).strip().lower())
         posisi_janin = mapping_posisi_janin.get(str(data["posisi_janin"]).strip().lower())
@@ -92,34 +89,30 @@ def interpret_main_cause(model, input_df, explainer, num_features=6):
     try:
         instance = input_df.values[0]
         explanation = explainer.explain_instance(instance, model.predict_proba, num_features=num_features)
-
-        # Ambil hanya fitur dengan kontribusi positif
+        
         positive_features = [(feat, weight) for feat, weight in explanation.as_list() if weight > 0]
 
         if positive_features:
             top_feature = sorted(positive_features, key=lambda x: x[1], reverse=True)[0][0]
             nama_mentah = top_feature.split()[0].replace("_", " ")
 
-            # Kamus nama fitur → bentuk lengkap
             nama_fitur_mapping = {
-                "Usia": "Usia Ibu",
-                "Tekanan": "Tekanan Darah",
-                "Riwayat": "Riwayat Persalinan",
-                "Posisi": "Posisi Janin",
-                "Kondisi": "Kondisi Kesehatan Janin",
+                "Usia": "Usia Ibu", "Tekanan": "Tekanan Darah", "Riwayat": "Riwayat Persalinan",
+                "Posisi": "Posisi Janin", "Kondisi": "Kondisi Kesehatan Janin",
                 "Riwayat Kesehatan": "Riwayat Kesehatan Ibu"
             }
-
             for kunci, nama_bersih in nama_fitur_mapping.items():
                 if nama_mentah.startswith(kunci):
                     return nama_bersih
-
             return nama_mentah.capitalize()
         else:
-            return "Tidak diketahui"
+            return "Tidak diketahui (tidak ada fitur positif)"
+            
     except Exception as e:
+        # === PERUBAHAN PENTING DI SINI ===
+        # Kita kembalikan pesan error yang sebenarnya untuk debugging
         logging.error(f"Gagal interpretasi LIME: {e}")
-        return "Tidak diketahui"
+        return f"Error LIME: {str(e)}"
 
 @app.route("/predict", methods=["POST"])
 def predict():
@@ -142,7 +135,6 @@ def predict():
         prediksi = model.predict(transformed_input)[0]
         hasil_prediksi = mapping_hasil_prediksi.get(prediksi, "unknown")
 
-        # --- Tambahkan Confidence (dalam persen bulat 0-100) ---
         probas = model.predict_proba(transformed_input)[0]
         pred_idx = list(mapping_hasil_prediksi.keys())[list(mapping_hasil_prediksi.values()).index(hasil_prediksi)]
         confidence = float(probas[pred_idx])
