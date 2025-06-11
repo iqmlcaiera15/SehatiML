@@ -5,6 +5,8 @@ import pandas as pd
 import logging
 import os
 import json
+import numpy as np
+from lime.lime_tabular import LimeTabularExplainer
 
 # Optional: Load .env
 try:
@@ -21,7 +23,7 @@ logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-# 🔹 Load model dan explainer
+# 🔹 Load model dan buat ulang explainer saat startup
 try:
     with open("random_forest_model.pkl", "rb") as model_file:
         model = pickle.load(model_file)
@@ -29,16 +31,21 @@ try:
     with open("feature_columns.pkl", "rb") as feature_file:
         feature_columns = pickle.load(feature_file)
 
-    # Load explainer LIME dari file pickle/dill (bukan generate ulang)
-    try:
-        with open("lime_explainer.pkl", "rb") as expl_file:
-            explainer = pickle.load(expl_file)
-    except Exception:
-        import dill
-        with open("lime_explainer.pkl", "rb") as expl_file:
-            explainer = dill.load(expl_file)
+    # --- PERUBAHAN UTAMA: Buat ulang explainer, jangan load dari file ---
+    # 1. Load data training (X_train) yang digunakan untuk membuat explainer
+    with open("X_train.pkl", "rb") as f:
+        X_train = pickle.load(f)
 
-    logging.info("Model, fitur, dan explainer berhasil dimuat.")
+    # 2. Buat objek LimeTabularExplainer secara dinamis
+    explainer = LimeTabularExplainer(
+        training_data=X_train.values,
+        feature_names=feature_columns,
+        class_names=['Normal', 'Caesar'], # Sesuaikan dengan kelas model Anda
+        mode='classification'
+    )
+    # -----------------------------------------------------------------
+
+    logging.info("Model, fitur, dan explainer berhasil dimuat/dibuat.")
 except Exception as e:
     logging.error(f"Gagal load model/explainer: {e}")
     raise e
@@ -53,7 +60,6 @@ def transform_input(data):
     try:
         encoded_input = {col: 0 for col in feature_columns}
         
-        # --- Normalisasi untuk one-hot encoding ---
         rki = str(data.get('riwayat_kesehatan_ibu', 'normal')).strip().title()
         if rki.lower() == "normal":
             rki = "Tidak Ada"
@@ -109,10 +115,9 @@ def interpret_main_cause(model, input_df, explainer, num_features=6):
             return "Tidak diketahui (tidak ada fitur positif)"
             
     except Exception as e:
-        # === PERUBAHAN PENTING DI SINI ===
-        # Kita kembalikan pesan error yang sebenarnya untuk debugging
+        # Kode dikembalikan ke versi produksi
         logging.error(f"Gagal interpretasi LIME: {e}")
-        return f"Error LIME: {str(e)}"
+        return "Tidak diketahui"
 
 @app.route("/predict", methods=["POST"])
 def predict():
