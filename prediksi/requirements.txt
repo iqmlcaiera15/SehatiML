@@ -1,9 +1,0 @@
-Flask
-gunicorn
-pandas
-scikit-learn
-lime
-dill
-python-dotenv
-numpy
-pickle5; python_version < "3.8"
